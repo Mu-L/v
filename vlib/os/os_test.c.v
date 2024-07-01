@@ -614,19 +614,6 @@ fn test_file_ext() {
 	assert os.file_ext('\\.git\\') == ''
 }
 
-fn test_join() {
-	$if windows {
-		assert os.join_path('v', 'vlib', 'os') == 'v\\vlib\\os'
-		assert os.join_path('', 'f1', 'f2') == 'f1\\f2'
-		assert os.join_path('v', '', 'dir') == 'v\\dir'
-	} $else {
-		assert os.join_path('v', 'vlib', 'os') == 'v/vlib/os'
-		assert os.join_path('/foo/bar', './file.txt') == '/foo/bar/file.txt'
-		assert os.join_path('', 'f1', 'f2') == 'f1/f2'
-		assert os.join_path('v', '', 'dir') == 'v/dir'
-	}
-}
-
 fn test_rmdir_all() {
 	mut dirs := ['some/dir', 'some/.hidden/directory']
 	$if windows {
@@ -905,6 +892,16 @@ fn test_execute_with_stderr_redirection() {
 	assert result2.exit_code == 1
 	assert result2.output == ''
 	assert os.exists(stderr_path)
+}
+
+fn test_execute_with_linefeeds() {
+	if os.user_os() == 'windows' {
+		return
+	}
+	result := os.execute('true\n')
+	assert result.exit_code == 0
+	result2 := os.execute('false\n')
+	assert result2.exit_code == 1
 }
 
 fn test_command() {

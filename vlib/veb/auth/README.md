@@ -9,14 +9,13 @@ All DBs are supported.
 
 ## Usage
 
-
 ```v
-import x.vweb
+import veb
 import db.pg
 import veb.auth
 
 pub struct App {
-	vweb.StaticHandler
+	veb.StaticHandler
 pub mut:
 	db   pg.DB
 	auth auth.Auth[pg.DB] // or auth.Auth[sqlite.DB] etc
@@ -25,7 +24,7 @@ pub mut:
 const port = 8081
 
 pub struct Context {
-	vweb.Context
+	veb.Context
 	current_user User
 }
 
@@ -41,11 +40,11 @@ fn main() {
 		db: pg.connect(host: 'localhost', user: 'postgres', password: '', dbname: 'postgres')!
 	}
 	app.auth = auth.new(app.db)
-	vweb.run[App, Context](mut app, port)
+	veb.run[App, Context](mut app, port)
 }
 
 @[post]
-pub fn (mut app App) register_user(mut ctx Context, name string, password string) vweb.Result {
+pub fn (mut app App) register_user(mut ctx Context, name string, password string) veb.Result {
 	salt := auth.generate_salt()
 	new_user := User{
 		name: name
@@ -68,7 +67,7 @@ pub fn (mut app App) register_user(mut ctx Context, name string, password string
 }
 
 @[post]
-pub fn (mut app App) login_post(mut ctx Context, name string, password string) vweb.Result {
+pub fn (mut app App) login_post(mut ctx Context, name string, password string) veb.Result {
 	user := app.find_user_by_name(name) or {
 		ctx.error('Bad credentials')
 		return ctx.redirect('/login')
@@ -91,4 +90,12 @@ pub fn (mut app App) find_user_by_name(name string) ?User {
 }
 ```
 
+## Security considerations
+
+`hash_password_with_salt` and its related functions use `sha256` for hashing with a single
+iteration. This is not secure for production use, and you should use a more secure hashing
+algorithm and multiple iterations.
+
+See also:
+- [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
 

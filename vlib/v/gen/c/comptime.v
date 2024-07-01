@@ -48,8 +48,21 @@ fn (mut g Gen) comptime_call(mut node ast.ComptimeCall) {
 	}
 	if node.method_name == 'env' {
 		// $env('ENV_VAR_NAME')
+		// TODO: deprecate after support for $d() is stable
 		val := util.cescaped_path(os.getenv(node.args_var))
 		g.write('_SLIT("${val}")')
+		return
+	}
+	if node.method_name == 'd' {
+		// $d('some_string',<default value>), affected by `-d some_string=actual_value`
+		val := util.cescaped_path(node.compile_value)
+		if node.result_type == ast.string_type {
+			g.write('_SLIT("${val}")')
+		} else if node.result_type == ast.char_type {
+			g.write("'${val}'")
+		} else {
+			g.write('${val}')
+		}
 		return
 	}
 	if node.method_name == 'res' {
@@ -72,13 +85,16 @@ fn (mut g Gen) comptime_call(mut node ast.ComptimeCall) {
 		ret_sym := g.table.sym(g.fn_decl.return_type)
 		fn_name := g.fn_decl.name.replace('.', '__') + node.pos.pos.str()
 		is_x_vweb := ret_sym.cname == 'x__vweb__Result'
+		is_veb := ret_sym.cname == 'veb__Result'
 
 		for stmt in node.vweb_tmpl.stmts {
 			if stmt is ast.FnDecl {
 				if stmt.name.starts_with('main.vweb_tmpl') {
 					if is_html {
 						g.inside_vweb_tmpl = true
-						if is_x_vweb {
+						if is_veb {
+							g.vweb_filter_fn_name = 'veb__filter'
+						} else if is_x_vweb {
 							g.vweb_filter_fn_name = 'x__vweb__filter'
 						} else {
 							g.vweb_filter_fn_name = 'vweb__filter'
@@ -96,7 +112,10 @@ fn (mut g Gen) comptime_call(mut node ast.ComptimeCall) {
 
 		if is_html {
 			// return a vweb or x.vweb html template
-			if is_x_vweb {
+			if is_veb {
+				ctx_name := g.fn_decl.params[1].name
+				g.writeln('veb__Context_html(${ctx_name}, _tmpl_res_${fn_name});')
+			} else if is_x_vweb {
 				ctx_name := g.fn_decl.params[1].name
 				g.writeln('x__vweb__Context_html(${ctx_name}, _tmpl_res_${fn_name});')
 			} else {
@@ -476,7 +495,7 @@ fn (mut g Gen) comptime_if_cond(cond ast.Expr, pkg_exist bool) (bool, bool) {
 		}
 		ast.PostfixExpr {
 			ifdef := g.comptime_if_to_ifdef((cond.expr as ast.Ident).name, true) or {
-				verror(err.msg())
+				verror(err.str())
 				return false, true
 			}
 			g.write('defined(${ifdef})')
@@ -671,7 +690,22 @@ fn (mut g Gen) comptime_if_cond(cond ast.Expr, pkg_exist bool) (bool, bool) {
 			return true, false
 		}
 		ast.ComptimeCall {
-			g.write('${pkg_exist}')
+			if cond.method_name == 'pkgconfig' {
+				g.write('${pkg_exist}')
+				return true, false
+			}
+			if cond.method_name == 'd' {
+				if cond.result_type == ast.bool_type {
+					if cond.compile_value == 'true' {
+						g.write('1')
+					} else {
+						g.write('0')
+					}
+				} else {
+					g.write('defined(CUSTOM_DEFINE_${cond.args_var})')
+				}
+				return true, false
+			}
 			return true, false
 		}
 		ast.SelectorExpr {

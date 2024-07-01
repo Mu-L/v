@@ -108,6 +108,7 @@ const skip_test_files = [
 	'vlib/db/pg/pg_orm_test.v', // pg not installed
 	'vlib/db/pg/pg_test.v', // pg not installed
 	'vlib/db/pg/pg_double_test.v', // pg not installed
+	'vlib/net/ftp/ftp_test.v', // currently broken
 ]
 // These tests are too slow to be run in the CI on each PR/commit
 // in the sanitized modes:
@@ -166,6 +167,7 @@ const skip_with_fsanitize_memory = [
 	'vlib/orm/orm_option_time_test.v',
 	'vlib/db/sqlite/sqlite_test.v',
 	'vlib/db/sqlite/sqlite_orm_test.v',
+	'vlib/db/sqlite/parent_child_test.v',
 	'vlib/db/sqlite/sqlite_vfs_lowlevel_test.v',
 	'vlib/v/tests/orm_enum_test.v',
 	'vlib/v/tests/orm_sub_struct_test.v',
@@ -237,6 +239,7 @@ const skip_on_ubuntu_musl = [
 	'vlib/db/sqlite/sqlite_test.v',
 	'vlib/db/sqlite/sqlite_orm_test.v',
 	'vlib/db/sqlite/sqlite_vfs_lowlevel_test.v',
+	'vlib/db/sqlite/parent_child_test.v',
 	'vlib/orm/orm_test.v',
 	'vlib/orm/orm_sql_or_blocks_test.v',
 	'vlib/orm/orm_create_and_drop_test.v',
@@ -279,6 +282,7 @@ const skip_on_ubuntu_musl = [
 	'vlib/x/sessions/tests/db_store_test.v',
 	'vlib/x/vweb/tests/vweb_test.v',
 	'vlib/x/vweb/tests/vweb_app_test.v',
+	'vlib/veb/tests/veb_app_test.v',
 ]
 const skip_on_linux = [
 	'do_not_remove',
@@ -377,7 +381,7 @@ fn Config.init(vargs []string, targs []string) !Config {
 			}
 			else {
 				if arg.starts_with('-') {
-					errs << 'error: unkown flag `${arg}`'
+					errs << 'error: unknown flag `${arg}`'
 					continue
 				}
 				if !os.is_dir(os.join_path(vroot, arg)) {
@@ -502,6 +506,11 @@ fn main() {
 		tsession.skip_files << skip_on_non_windows
 	}
 	$if macos {
+		$if arm64 {
+			if cfg.github_job == 'clang' {
+				tsession.skip_files << 'vlib/net/openssl/openssl_compiles_test.c.v'
+			}
+		}
 		tsession.skip_files << skip_on_macos
 	}
 	$if !macos {

@@ -4,7 +4,6 @@
 module parser
 
 import v.ast
-import v.vet
 import v.token
 
 fn (mut p Parser) expr(precedence int) ast.Expr {
@@ -252,8 +251,10 @@ fn (mut p Parser) check_expr(precedence int) !ast.Expr {
 				expr := p.expr(0)
 				p.check(.rpar)
 				if p.tok.kind != .dot && p.tok.line_nr == p.prev_tok.line_nr {
-					p.warn_with_pos('use e.g. `typeof(expr).name` or `sum_type_instance.type_name()` instead',
-						spos)
+					if !p.inside_unsafe {
+						p.warn_with_pos('use e.g. `typeof(expr).name` or `sum_type_instance.type_name()` instead',
+							spos)
+					}
 				}
 				node = ast.TypeOf{
 					is_type: false
@@ -686,10 +687,6 @@ fn (mut p Parser) infix_expr(left ast.Expr) ast.Expr {
 		p.inside_in_array = false
 	}
 	p.expecting_type = prev_expecting_type
-	if p.pref.is_vet && op in [.key_in, .not_in] && right is ast.ArrayInit && right.exprs.len == 1 {
-		p.vet_error('Use `var == value` instead of `var in [value]`', pos.line_nr, vet.FixKind.vfmt,
-			.default)
-	}
 	mut or_stmts := []ast.Stmt{}
 	mut or_kind := ast.OrKind.absent
 	mut or_pos := p.tok.pos()
@@ -845,11 +842,17 @@ fn (mut p Parser) process_custom_orm_operators() {
 	}
 
 	is_like_operator := p.tok.kind == .name && p.tok.lit == 'like'
+	is_ilike_operator := p.tok.kind == .name && p.tok.lit == 'ilike'
 
 	if is_like_operator {
 		p.tok = token.Token{
 			...p.tok
 			kind: .key_like
+		}
+	} else if is_ilike_operator {
+		p.tok = token.Token{
+			...p.tok
+			kind: .key_ilike
 		}
 	}
 }

@@ -9,7 +9,6 @@ import v.ast
 import v.token
 import v.pref
 import v.util
-import v.vet
 import v.errors
 import os
 import hash.fnv1a
@@ -48,6 +47,7 @@ mut:
 	inside_for_expr           bool
 	inside_fn                 bool // true even with implicit main
 	inside_fn_return          bool
+	inside_fn_concrete_type   bool // parsing fn_name[concrete_type]() call expr
 	inside_call_args          bool // true inside f(  ....  )
 	inside_unsafe_fn          bool
 	inside_str_interp         bool
@@ -112,8 +112,6 @@ pub mut:
 	errors         []errors.Error
 	warnings       []errors.Warning
 	notices        []errors.Notice
-	vet_errors     []vet.Error
-	vet_notices    []vet.Error
 	template_paths []string // record all compiled $tmpl files; needed for `v watch run webserver.v`
 }
 
@@ -257,53 +255,6 @@ pub fn parse_file(path string, mut table ast.Table, comments_mode scanner.Commen
 	res := p.parse()
 	unsafe { p.free_scanner() }
 	return res
-}
-
-pub fn parse_vet_file(path string, mut table_ ast.Table, pref_ &pref.Preferences) (&ast.File, []vet.Error, []vet.Error) {
-	$if trace_parse_vet_file ? {
-		eprintln('> ${@MOD}.${@FN} path: ${path}')
-	}
-	global_scope := &ast.Scope{
-		parent: unsafe { nil }
-	}
-	mut p := Parser{
-		scanner: scanner.new_scanner_file(path, .parse_comments, pref_) or { panic(err) }
-		table: table_
-		pref: pref_
-		scope: &ast.Scope{
-			start_pos: 0
-			parent: global_scope
-		}
-		errors: []errors.Error{}
-		warnings: []errors.Warning{}
-	}
-	p.set_path(path)
-	if p.scanner.text.contains_any_substr(['\n  ', ' \n']) {
-		source_lines := os.read_lines(path) or { []string{} }
-		mut is_vfmt_off := false
-		for lnumber, line in source_lines {
-			if line.starts_with('// vfmt off') {
-				is_vfmt_off = true
-			} else if line.starts_with('// vfmt on') {
-				is_vfmt_off = false
-			}
-			if is_vfmt_off {
-				continue
-			}
-			if line.starts_with('  ') {
-				p.vet_error('Looks like you are using spaces for indentation.', lnumber,
-					.vfmt, .space_indent)
-			}
-			if line.ends_with(' ') {
-				p.vet_error('Looks like you have trailing whitespace.', lnumber, .unknown,
-					.trailing_space)
-			}
-		}
-	}
-	p.vet_errors << p.scanner.vet_errors
-	file := p.parse()
-	unsafe { p.free_scanner() }
-	return file, p.vet_errors, p.vet_notices
 }
 
 pub fn (mut p Parser) parse() &ast.File {
@@ -910,11 +861,6 @@ fn (mut p Parser) comment() ast.Comment {
 	is_multi := num_newlines > 0
 	pos.last_line = pos.line_nr + num_newlines
 	p.next()
-	// Filter out false positive space indent vet errors inside comments
-	if p.vet_errors.len > 0 && is_multi {
-		p.vet_errors = p.vet_errors.filter(it.typ != .space_indent
-			|| it.pos.line_nr - 1 > pos.last_line || it.pos.line_nr - 1 <= pos.line_nr)
-	}
 	return ast.Comment{
 		text: text
 		is_multi: is_multi
@@ -2160,6 +2106,9 @@ fn (mut p Parser) note_with_pos(s string, pos token.Pos) {
 	if p.pref.skip_warnings {
 		return
 	}
+	if p.pref.skip_notes {
+		return
+	}
 	if p.is_generated {
 		return
 	}
@@ -2176,34 +2125,6 @@ fn (mut p Parser) note_with_pos(s string, pos token.Pos) {
 			reporter: .parser
 			message: s
 		}
-	}
-}
-
-fn (mut p Parser) vet_error(msg string, line int, fix vet.FixKind, typ vet.ErrorType) {
-	pos := token.Pos{
-		line_nr: line + 1
-	}
-	p.vet_errors << vet.Error{
-		message: msg
-		file_path: p.scanner.file_path
-		pos: pos
-		kind: .error
-		fix: fix
-		typ: typ
-	}
-}
-
-fn (mut p Parser) vet_notice(msg string, line int, fix vet.FixKind, typ vet.ErrorType) {
-	pos := token.Pos{
-		line_nr: line + 1
-	}
-	p.vet_notices << vet.Error{
-		message: msg
-		file_path: p.scanner.file_path
-		pos: pos
-		kind: .notice
-		fix: fix
-		typ: typ
 	}
 }
 
@@ -2371,6 +2292,21 @@ fn (mut p Parser) ident(language ast.Language) ast.Ident {
 		// `generic_fn[int]`
 		concrete_types = p.parse_concrete_types()
 	}
+	typ := match p.peek_tok.kind {
+		.string {
+			ast.string_type_idx
+		}
+		.lsbr {
+			ast.array_type_idx
+		}
+		else {
+			if p.tok.kind == .dot {
+				if var := p.scope.find_var(name) { var.typ } else { 0 }
+			} else {
+				0
+			}
+		}
+	}
 	return ast.Ident{
 		tok_kind: p.tok.kind
 		kind: .unresolved
@@ -2382,6 +2318,7 @@ fn (mut p Parser) ident(language ast.Language) ast.Ident {
 		is_mut: is_mut
 		mut_pos: mut_pos
 		info: ast.IdentVar{
+			typ: typ
 			is_mut: is_mut
 			is_static: is_static
 			is_volatile: is_volatile
@@ -2654,6 +2591,9 @@ fn (mut p Parser) name_expr() ast.Expr {
 		first_pos := p.tok.pos()
 		mut last_pos := first_pos
 		mut elem_type_pos := p.peek_tok.pos()
+		if p.peek_tok.kind == .not {
+			return p.error_with_pos('cannot use chan with Result type', p.peek_tok.pos())
+		}
 		chan_type := p.parse_chan_type()
 		elem_type_pos = elem_type_pos.extend(p.prev_tok.pos())
 		mut has_cap := false
@@ -2776,10 +2716,7 @@ fn (mut p Parser) name_expr() ast.Expr {
 			mod = original_name
 			original_name = p.peek_token(4).lit
 		}
-		mut name := original_name
-		if mod.len > 0 {
-			name = '${mod}.${name}'
-		}
+		name := if mod != '' { '${mod}.${original_name}' } else { original_name }
 		name_w_mod := p.prepend_mod(name)
 		is_c_pointer_cast := language == .c && prev_tok_kind == .amp // `&C.abc(x)` is *always* a cast
 		is_c_type_cast := language == .c && (original_name in ['intptr_t', 'uintptr_t']
@@ -3433,6 +3370,10 @@ fn (mut p Parser) parse_concrete_types() []ast.Type {
 	if p.tok.kind !in [.lt, .lsbr] {
 		return types
 	}
+	p.inside_fn_concrete_type = true
+	defer {
+		p.inside_fn_concrete_type = false
+	}
 	end_kind := if p.tok.kind == .lt { token.Kind.gt } else { token.Kind.rsbr }
 	p.next() // `<`
 	mut first_done := false
@@ -3464,17 +3405,6 @@ fn (mut p Parser) enum_val() ast.EnumVal {
 	}
 }
 
-fn (mut p Parser) filter_string_vet_errors(pos token.Pos) {
-	if p.vet_errors.len == 0 {
-		return
-	}
-	p.vet_errors = p.vet_errors.filter(
-		(it.typ == .trailing_space && it.pos.line_nr - 1 >= pos.last_line)
-		|| (it.typ != .trailing_space && it.pos.line_nr - 1 > pos.last_line)
-		|| (it.typ == .space_indent && it.pos.line_nr - 1 <= pos.line_nr)
-		|| (it.typ != .space_indent && it.pos.line_nr - 1 < pos.line_nr))
-}
-
 fn (mut p Parser) string_expr() ast.Expr {
 	is_raw := p.tok.kind == .name && p.tok.lit == 'r'
 	is_cstr := p.tok.kind == .name && p.tok.lit == 'c'
@@ -3487,7 +3417,6 @@ fn (mut p Parser) string_expr() ast.Expr {
 	pos.last_line = pos.line_nr + val.count('\n')
 	if p.peek_tok.kind != .str_dollar {
 		p.next()
-		p.filter_string_vet_errors(pos)
 		node = ast.StringLiteral{
 			val: val
 			is_raw: is_raw
@@ -3567,7 +3496,6 @@ fn (mut p Parser) string_expr() ast.Expr {
 		fposs << p.prev_tok.pos()
 	}
 	pos = pos.extend(p.prev_tok.pos())
-	p.filter_string_vet_errors(pos)
 	node = ast.StringInterLiteral{
 		vals: vals
 		exprs: exprs
@@ -3725,6 +3653,10 @@ fn (mut p Parser) import_stmt() ast.Import {
 		return import_node
 	}
 	mut source_name := p.check_name()
+	if source_name == '' {
+		p.error_with_pos('import name can not be empty', pos)
+		return import_node
+	}
 	mut mod_name_arr := []string{}
 	mod_name_arr << source_name
 	if import_pos.line_nr != pos.line_nr {
@@ -3928,10 +3860,6 @@ fn (mut p Parser) const_decl() ast.ConstDecl {
 			return ast.ConstDecl{}
 		}
 		expr := p.expr(0)
-		if expr is ast.ArrayInit && !expr.is_fixed && p.pref.is_vet {
-			p.vet_notice('use a fixed array, instead of a dynamic one', pos.line_nr, vet.FixKind.unknown,
-				.default)
-		}
 		if is_block {
 			end_comments << p.eat_comments(same_line: true)
 		}
@@ -4238,15 +4166,18 @@ fn (mut p Parser) enum_decl() ast.EnumDecl {
 	isb.write_string('		val := unsafe{ ${enum_name}(input) }\n')
 	if is_flag {
 		isb.write_string('		if input == 0 { return val }\n')
+		all_bits_set_value := '0b' + '1'.repeat(fields.len)
+		isb.write_string('		if input & ~${all_bits_set_value} == 0 { return val }\n')
+	} else {
+		isb.write_string('		match val {\n')
+		for f in fields {
+			isb.write_string('			.${f.source_name} { return ${enum_name}.${f.source_name} }\n')
+		}
+		if is_flag {
+			isb.write_string('			else{}\n')
+		}
+		isb.write_string('		}\n')
 	}
-	isb.write_string('		match val {\n')
-	for f in fields {
-		isb.write_string('			.${f.source_name} { return ${enum_name}.${f.source_name} }\n')
-	}
-	if is_flag {
-		isb.write_string('			else{}\n')
-	}
-	isb.write_string('		}\n')
 	isb.write_string('	}\n')
 	isb.write_string('	\$if input is \$string {\n')
 	isb.write_string('		val := input.str()\n') // TODO: this should not be needed, the `$if input is $string` above should have already smartcasted `input`

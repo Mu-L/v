@@ -248,16 +248,16 @@ fn (mut cmd Command) add_default_commands() {
 }
 
 fn (mut cmd Command) parse_flags() {
-	for {
-		if cmd.args.len < 1 || !cmd.args[0].starts_with('-') {
-			break
+	for cmd.args.len > 0 {
+		if !cmd.args[0].starts_with('-') {
+			return
 		}
 		mut found := false
-		for i in 0 .. cmd.flags.len {
-			mut flag := &cmd.flags[i]
-			if flag.matches(cmd.args, cmd.posix_mode) {
+		for mut flag in cmd.flags {
+			if flag.matches(cmd.args[0], cmd.posix_mode) {
 				found = true
 				flag.found = true
+				// Eat flag and its values, continue with reduced args.
 				cmd.args = flag.parse(cmd.args, cmd.posix_mode) or {
 					eprintln_exit('Failed to parse flag `${cmd.args[0]}`: ${err}')
 				}
@@ -341,8 +341,7 @@ fn (cmd Command) check_version_flag() {
 	if cmd.defaults.parsed.version.flag && cmd.version != '' && cmd.flags.contains('version') {
 		version_flag := cmd.flags.get_bool('version') or { return } // ignore error and handle command normally
 		if version_flag {
-			version_cmd := cmd.commands.get('version') or { return } // ignore error and handle command normally
-			version_cmd.execute(version_cmd) or { panic(err) }
+			print_version_for_command(cmd) or { panic(err) }
 			exit(0)
 		}
 	}
