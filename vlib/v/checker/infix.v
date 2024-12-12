@@ -44,6 +44,10 @@ fn (mut c Checker) infix_expr(mut node ast.InfixExpr) ast.Type {
 	}
 	// `arr << if n > 0 { 10 } else { 11 }` set the right c.expected_type
 	if node.op == .left_shift && c.table.sym(left_type).kind == .array {
+		if c.pref.skip_unused && !c.is_builtin_mod && c.mod != 'strings' {
+			c.table.used_features.index = true
+			c.table.used_features.arr_init = true
+		}
 		if mut node.right is ast.IfExpr {
 			if node.right.is_expr && node.right.branches.len > 0 {
 				mut last_stmt := node.right.branches[0].stmts.last()
@@ -317,12 +321,12 @@ fn (mut c Checker) infix_expr(mut node ast.InfixExpr) ast.Type {
 			if mut right_sym.info is ast.Alias && (right_sym.info.language != .c
 				&& c.mod == c.table.type_to_str(unwrapped_right_type).split('.')[0]
 				&& (right_final_sym.is_primitive() || right_final_sym.kind == .enum)) {
-				right_sym = right_final_sym
+				right_sym = unsafe { right_final_sym }
 			}
 			if mut left_sym.info is ast.Alias && (left_sym.info.language != .c
 				&& c.mod == c.table.type_to_str(unwrapped_left_type).split('.')[0]
 				&& (left_final_sym.is_primitive() || left_final_sym.kind == .enum)) {
-				left_sym = left_final_sym
+				left_sym = unsafe { left_final_sym }
 			}
 
 			if c.pref.translated && node.op in [.plus, .minus, .mul]
@@ -780,7 +784,7 @@ fn (mut c Checker) infix_expr(mut node ast.InfixExpr) ast.Type {
 						c.error('`${op}` can only be used to test for none in sql', node.pos)
 					}
 				} else if left_sym.kind !in [.interface, .sum_type]
-					&& !c.comptime.is_comptime_var(node.left) {
+					&& !c.comptime.is_comptime(node.left) {
 					c.error('`${op}` can only be used with interfaces and sum types',
 						node.pos) // can be used in sql too, but keep err simple
 				} else if mut left_sym.info is ast.SumType {
@@ -893,9 +897,9 @@ fn (mut c Checker) infix_expr(mut node ast.InfixExpr) ast.Type {
 	right_is_option := right_type.has_flag(.option)
 	if left_is_option || right_is_option {
 		opt_infix_pos := if left_is_option { left_pos } else { right_pos }
-		if (node.left !in [ast.Ident, ast.SelectorExpr, ast.ComptimeSelector]
-			|| node.op in [.eq, .ne, .lt, .gt, .le, .ge]) && right_sym.kind != .none
-			&& !c.inside_sql {
+		if (node.left !in [ast.Ident, ast.IndexExpr, ast.SelectorExpr, ast.ComptimeSelector]
+			|| (node.op in [.eq, .ne] && !right_is_option)
+			|| node.op in [.lt, .gt, .le, .ge]) && right_sym.kind != .none && !c.inside_sql {
 			c.error('unwrapped Option cannot be used in an infix expression', opt_infix_pos)
 		}
 	}

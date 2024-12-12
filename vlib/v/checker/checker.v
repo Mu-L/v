@@ -30,10 +30,10 @@ const generic_fn_postprocess_iterations_cutoff_limit = 1_000_000
 // Note that methods that do not return anything, or that return known types, are not listed here, since they are just ordinary non generic methods.
 pub const array_builtin_methods = ['filter', 'clone', 'repeat', 'reverse', 'map', 'slice', 'sort',
 	'sort_with_compare', 'sorted', 'sorted_with_compare', 'contains', 'index', 'wait', 'any', 'all',
-	'first', 'last', 'pop', 'delete', 'insert', 'prepend']
+	'first', 'last', 'pop', 'delete', 'insert', 'prepend', 'count']
 pub const array_builtin_methods_chk = token.new_keywords_matcher_from_array_trie(array_builtin_methods)
 pub const fixed_array_builtin_methods = ['contains', 'index', 'any', 'all', 'wait', 'map', 'sort',
-	'sorted', 'sort_with_compare', 'sorted_with_compare', 'reverse', 'reverse_in_place']
+	'sorted', 'sort_with_compare', 'sorted_with_compare', 'reverse', 'reverse_in_place', 'count']
 pub const fixed_array_builtin_methods_chk = token.new_keywords_matcher_from_array_trie(fixed_array_builtin_methods)
 // TODO: remove `byte` from this list when it is no longer supported
 pub const reserved_type_names = ['byte', 'bool', 'char', 'i8', 'i16', 'int', 'i64', 'u8', 'u16',
@@ -801,6 +801,78 @@ fn (mut c Checker) expand_iface_embeds(idecl &ast.InterfaceDecl, level int, ifac
 		ares << v
 	}
 	return ares
+}
+
+// fail_if_immutable_to_mutable checks if there is a immutable reference on right-side of assignment for mutable var
+fn (mut c Checker) fail_if_immutable_to_mutable(left_type ast.Type, right_type ast.Type, right ast.Expr) bool {
+	match right {
+		ast.Ident {
+			if c.inside_unsafe || c.pref.translated || c.file.is_translated {
+				return true
+			}
+			if right.obj is ast.Var {
+				if left_type.is_ptr() && !right.is_mut() && right_type.is_ptr() {
+					c.note('`${right.name}` is immutable, cannot have a mutable reference to an immutable object',
+						right.pos)
+					return false
+				}
+				if !right.obj.is_mut
+					&& c.table.final_sym(right_type).kind in [.array, .array_fixed, .map] {
+					c.note('left-side of assignment expects a mutable reference, but variable `${right.name}` is immutable, declare it with `mut` to make it mutable or clone it',
+						right.pos)
+					return false
+				}
+			}
+		}
+		ast.IfExpr {
+			if c.inside_unsafe || c.pref.translated || c.file.is_translated {
+				return true
+			}
+			for branch in right.branches {
+				stmts := branch.stmts.filter(it is ast.ExprStmt)
+				if stmts.len > 0 {
+					last_expr := stmts.last() as ast.ExprStmt
+					c.fail_if_immutable_to_mutable(left_type, right_type, last_expr.expr)
+				}
+			}
+		}
+		ast.MatchExpr {
+			if c.inside_unsafe || c.pref.translated || c.file.is_translated {
+				return true
+			}
+			for branch in right.branches {
+				stmts := branch.stmts.filter(it is ast.ExprStmt)
+				if stmts.len > 0 {
+					last_expr := stmts.last() as ast.ExprStmt
+					c.fail_if_immutable_to_mutable(left_type, right_type, last_expr.expr)
+				}
+			}
+		}
+		ast.StructInit {
+			typ_sym := c.table.sym(right.typ)
+			for init_field in right.init_fields {
+				if field_info := c.table.find_field_with_embeds(typ_sym, init_field.name) {
+					if field_info.is_mut {
+						if init_field.expr is ast.Ident && !init_field.expr.is_mut()
+							&& init_field.typ.is_ptr() {
+							c.note('`${init_field.expr.name}` is immutable, cannot have a mutable reference to an immutable object',
+								init_field.pos)
+						} else if init_field.expr is ast.PrefixExpr {
+							if init_field.expr.op == .amp && init_field.expr.right is ast.Ident
+								&& !init_field.expr.right.is_mut() {
+								c.note('`${init_field.expr.right.name}` is immutable, cannot have a mutable reference to an immutable object',
+									init_field.expr.right.pos)
+							}
+						}
+					}
+				}
+			}
+		}
+		else {
+			return true
+		}
+	}
+	return true
 }
 
 // returns name and position of variable that needs write lock
@@ -1720,14 +1792,22 @@ fn (mut c Checker) selector_expr(mut node ast.SelectorExpr) ast.Type {
 		}
 		node.typ = field.typ
 		if node.or_block.kind == .block {
-			c.expected_or_type = node.typ.clear_option_and_result()
+			unwrapped_typ := c.unwrap_generic(node.typ)
+			c.expected_or_type = unwrapped_typ.clear_option_and_result()
 			c.stmts_ending_with_expression(mut node.or_block.stmts, c.expected_or_type)
-			c.check_or_expr(node.or_block, node.typ, c.expected_or_type, node)
+			c.check_or_expr(node.or_block, unwrapped_typ, c.expected_or_type, node)
 			c.expected_or_type = ast.void_type
+		}
+		if c.pref.skip_unused && node.or_block.kind != .absent
+			&& !c.table.used_features.option_or_result {
+			c.table.used_features.option_or_result = true
 		}
 		return field.typ
 	}
 	if mut method := c.table.sym(c.unwrap_generic(typ)).find_method_with_generic_parent(field_name) {
+		if c.pref.skip_unused && typ.has_flag(.generic) {
+			c.table.used_features.comptime_calls['${int(method.params[0].typ)}.${field_name}'] = true
+		}
 		if c.expected_type != 0 && c.expected_type != ast.none_type {
 			fn_type := ast.new_type(c.table.find_or_register_fn_type(method, false, true))
 			// if the expected type includes the receiver, don't hide it behind a closure
@@ -2972,8 +3052,8 @@ pub fn (mut c Checker) expr(mut node ast.Expr) ast.Type {
 				}
 				c.table.used_features.print_types[ast.int_type_idx] = true
 			}
-			if c.comptime.inside_comptime_for && node.expr is ast.Ident {
-				if c.comptime.is_comptime_var(node.expr) {
+			if c.comptime.inside_comptime_for && mut node.expr is ast.Ident {
+				if node.expr.ct_expr {
 					node.expr_type = c.comptime.get_type(node.expr as ast.Ident)
 				} else if (node.expr as ast.Ident).name in c.comptime.type_map {
 					node.expr_type = c.comptime.type_map[(node.expr as ast.Ident).name]
@@ -3193,6 +3273,10 @@ pub fn (mut c Checker) expr(mut node ast.Expr) ast.Type {
 		ast.StructInit {
 			if node.unresolved {
 				mut expr_ := c.table.resolve_init(node, c.unwrap_generic(node.typ))
+				if c.pref.skip_unused && c.table.used_features.used_maps == 0
+					&& expr_ is ast.MapInit {
+					c.table.used_features.used_maps++
+				}
 				return c.expr(mut expr_)
 			}
 			mut inited_fields := []string{}
@@ -3607,6 +3691,16 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 		c.error('cannot cast `${ft}` ${kind_name} value to `${tt}`, use `${node.expr} as ${tt}` instead',
 			node.pos)
 	}
+	if from_sym.language == .v && from_type.is_ptr() && !to_type.is_ptr() && !final_to_type.is_ptr()
+		&& !node.expr.is_auto_deref_var() && final_to_sym.kind == .struct
+		&& final_from_sym.kind == .struct {
+		if c.check_struct_signature(final_from_sym.info as ast.Struct, final_to_sym.info as ast.Struct) {
+			ft := c.table.type_to_str(from_type)
+			tt := c.table.type_to_str(to_type)
+			c.error('cannot cast `${ft}` to `${tt}`, you must dereference it first (e.g. ${tt}(*var))',
+				node.pos)
+		}
+	}
 
 	if node.has_arg {
 		c.expr(mut node.arg)
@@ -3902,6 +3996,9 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 			c.error('`mut` is not allowed with `=` (use `:=` to declare a variable)',
 				node.pos)
 		}
+		if c.pref.skip_unused && !c.is_builtin_mod && node.language == .v && node.name.contains('.') {
+			c.table.used_features.used_modules[node.name.all_before('.')] = true
+		}
 		if mut obj := node.scope.find(node.name) {
 			match mut obj {
 				ast.GlobalField {
@@ -3975,6 +4072,7 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 						obj.typ = typ
 					}
 					node.obj = obj
+					node.ct_expr = obj.ct_type_var != .no_comptime
 					// unwrap option (`println(x)`)
 					if is_option {
 						if node.or_expr.kind == .absent {
@@ -4775,7 +4873,7 @@ fn (mut c Checker) index_expr(mut node ast.IndexExpr) ast.Type {
 			unwrapped_sym := c.table.final_sym(unwrapped_typ)
 			if unwrapped_sym.kind in [.map, .array, .array_fixed] {
 				typ = unwrapped_typ
-				typ_sym = unwrapped_sym
+				typ_sym = unsafe { unwrapped_sym }
 			}
 		}
 		else {}

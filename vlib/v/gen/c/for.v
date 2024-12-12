@@ -4,6 +4,7 @@
 module c
 
 import v.ast
+import v.util
 
 fn (mut g Gen) for_c_stmt(node ast.ForCStmt) {
 	g.loop_depth++
@@ -141,8 +142,7 @@ fn (mut g Gen) for_in_stmt(node_ ast.ForInStmt) {
 	mut node := unsafe { node_ }
 	mut is_comptime := false
 
-	if (node.cond is ast.Ident && g.comptime.is_comptime_var(node.cond))
-		|| node.cond is ast.ComptimeSelector {
+	if (node.cond is ast.Ident && node.cond.ct_expr) || node.cond is ast.ComptimeSelector {
 		mut unwrapped_typ := g.unwrap_generic(node.cond_type)
 		ctyp := g.comptime.get_type(node.cond)
 		if ctyp != ast.void_type {
@@ -221,7 +221,7 @@ fn (mut g Gen) for_in_stmt(node_ ast.ForInStmt) {
 		mut val_sym := g.table.sym(node.val_type)
 		op_field := g.dot_or_ptr(node.cond_type)
 
-		if is_comptime && g.comptime.is_comptime_var(node.cond) {
+		if is_comptime && g.comptime.is_comptime(node.cond) {
 			mut unwrapped_typ := g.unwrap_generic(node.cond_type)
 			ctyp := g.unwrap_generic(g.comptime.get_type(node.cond))
 			if ctyp != ast.void_type {
@@ -267,6 +267,8 @@ fn (mut g Gen) for_in_stmt(node_ ast.ForInStmt) {
 				g.writeln('\t${styp} ${c_name(node.val_var)};')
 				g.writeln('\tmemcpy(*(${styp}*)${c_name(node.val_var)}, (byte*)${right}, sizeof(${styp}));')
 			} else {
+				needs_memcpy := !node.val_type.is_ptr()
+					&& g.table.final_sym(node.val_type).kind == .array_fixed
 				// If val is mutable (pointer behind the scenes), we need to generate
 				// `int* val = ((int*)arr.data) + i;`
 				// instead of
@@ -276,10 +278,17 @@ fn (mut g Gen) for_in_stmt(node_ ast.ForInStmt) {
 					'((${styp}*)${opt_expr}${op_field}data)[${i}]'
 				} else if node.val_is_mut || node.val_is_ref {
 					'((${styp})${cond_var}${op_field}data) + ${i}'
+				} else if val_sym.kind == .array_fixed {
+					'((${styp}*)${cond_var}${op_field}data)[${i}]'
 				} else {
 					'((${styp}*)${cond_var}${op_field}data)[${i}]'
 				}
-				g.writeln('\t${styp} ${c_name(node.val_var)} = ${right};')
+				if !needs_memcpy {
+					g.writeln('\t${styp} ${c_name(node.val_var)} = ${right};')
+				} else {
+					g.writeln('\t${styp} ${c_name(node.val_var)} = {0};')
+					g.writeln('\tmemcpy(${c_name(node.val_var)}, ${right}, sizeof(${styp}));')
+				}
 			}
 		}
 	} else if node.kind == .array_fixed {
@@ -417,7 +426,7 @@ fn (mut g Gen) for_in_stmt(node_ ast.ForInStmt) {
 			g.expr(cond)
 			g.writeln('${field_accessor}str[${i}];')
 		}
-	} else if node.kind == .struct {
+	} else if node.kind in [.struct, .interface] {
 		cond_type_sym := g.table.sym(node.cond_type)
 		next_fn := cond_type_sym.find_method_with_generic_parent('next') or {
 			verror('`next` method not found')
@@ -442,12 +451,20 @@ fn (mut g Gen) for_in_stmt(node_ ast.ForInStmt) {
 			if receiver_sym.info.concrete_types.len > 0 {
 				fn_name = g.generic_fn_name(receiver_sym.info.concrete_types, fn_name)
 			}
+		} else if receiver_sym.info is ast.Interface {
+			left_cc_type := g.cc_type(g.table.unaliased_type(node.cond_type), false)
+			left_type_name := util.no_dots(left_cc_type)
+			fn_name = '${c_name(left_type_name)}_name_table[${t_expr}._typ]._method_next'
 		}
 		g.write('\t${g.styp(ret_typ)} ${t_var} = ${fn_name}(')
 		if !node.cond_type.is_ptr() && receiver_typ.is_ptr() {
 			g.write('&')
 		}
-		g.writeln('${t_expr});')
+		if node.kind == .interface {
+			g.writeln('${t_expr}._object);')
+		} else {
+			g.writeln('${t_expr});')
+		}
 		g.writeln('\tif (${t_var}.state != 0) break;')
 		val := if node.val_var in ['', '_'] { g.new_tmp_var() } else { node.val_var }
 		val_styp := g.styp(ret_typ.clear_option_and_result())

@@ -139,7 +139,7 @@ ${enc_fn_dec} {
 \tcJSON *o;')
 		if is_js_prim(sym.name) && utyp.is_ptr() {
 			g.gen_prim_enc_dec(utyp, mut enc, mut dec)
-		} else if sym.kind == .array || sym.kind == .array_fixed {
+		} else if sym.kind in [.array, .array_fixed] {
 			array_size := if sym.kind == .array_fixed {
 				(sym.info as ast.ArrayFixed).size
 			} else {
@@ -421,7 +421,7 @@ fn (mut g Gen) gen_sumtype_enc_dec(utyp ast.Type, sym ast.TypeSymbol, mut enc st
 
 		// Helpers for decoding
 		g.get_sumtype_casting_fn(variant, typ)
-		g.definitions.writeln('static inline ${sym.cname} ${variant_typ}_to_sumtype_${sym.cname}(${variant_typ}* x);')
+		g.definitions.writeln('/*KEK*/static inline ${sym.cname} ${variant_typ}_to_sumtype_${sym.cname}(${variant_typ}* x);')
 
 		// ENCODING
 		enc.writeln('\tif (${var_data}${field_op}_typ == ${int(variant.idx())}) {')
@@ -1021,7 +1021,7 @@ fn (mut g Gen) decode_array(utyp ast.Type, value_type ast.Type, fixed_array_size
 		s = '${styp} val = ${fn_name}((cJSON *)jsval); '
 	} else if is_array_fixed_val {
 		s = '
-		${result_name}_${styp} val2 = ${fn_name} ((cJSON *)jsval);
+		${result_name}_${styp.replace('*', '_ptr')} val2 = ${fn_name} ((cJSON *)jsval);
 		if(val2.is_error) {
 			${array_free_str}
 			return *(${result_name}_${ret_styp}*)&val2;
@@ -1030,7 +1030,7 @@ fn (mut g Gen) decode_array(utyp ast.Type, value_type ast.Type, fixed_array_size
 		memcpy(&val, (${styp}*)val2.data, sizeof(${styp}));'
 	} else {
 		s = '
-		${result_name}_${styp} val2 = ${fn_name} ((cJSON *)jsval);
+		${result_name}_${styp.replace('*', '_ptr')} val2 = ${fn_name} ((cJSON *)jsval);
 		if(val2.is_error) {
 			${array_free_str}
 			return *(${result_name}_${ret_styp}*)&val2;
