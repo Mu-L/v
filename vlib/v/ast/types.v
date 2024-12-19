@@ -398,7 +398,7 @@ pub fn (t Type) clear_flags(flags ...TypeFlag) Type {
 	if flags.len == 0 {
 		return t & 0xffffff
 	} else {
-		mut typ := int(t)
+		mut typ := u32(t)
 		for flag in flags {
 			typ = typ & ~(u32(flag))
 		}
@@ -1004,6 +1004,16 @@ pub fn (t &Struct) is_empty_struct() bool {
 @[inline]
 pub fn (t &Struct) is_unresolved_generic() bool {
 	return t.generic_types.len > 0 && t.concrete_types.len == 0
+}
+
+pub fn (t &TypeSymbol) is_primitive_fixed_array() bool {
+	if t.info is ArrayFixed {
+		return global_table.final_sym(t.info.elem_type).is_primitive()
+	} else if t.info is Alias {
+		return global_table.final_sym(t.info.parent_type).is_primitive_fixed_array()
+	} else {
+		return false
+	}
 }
 
 pub fn (t &TypeSymbol) is_array_fixed() bool {

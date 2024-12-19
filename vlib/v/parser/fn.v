@@ -141,7 +141,7 @@ fn (mut p Parser) call_args() []ast.CallArg {
 			array_decompose = true
 		}
 		mut expr := ast.empty_expr
-		if p.tok.kind == .name && p.peek_tok.kind == .colon {
+		if p.tok.kind in [.name, .key_type] && p.peek_tok.kind == .colon {
 			// `foo(key:val, key2:val2)`
 			expr = p.struct_init('void_type', .short_syntax, false)
 		} else {
@@ -889,7 +889,11 @@ fn (mut p Parser) anon_fn() ast.AnonFn {
 	p.cur_fn_name = keep_fn_name
 	func.name = name
 	idx := p.table.find_or_register_fn_type(func, true, false)
-	typ := ast.new_type(idx)
+	typ := if generic_names.len > 0 {
+		ast.new_type(idx).set_flag(.generic)
+	} else {
+		ast.new_type(idx)
+	}
 	p.inside_defer = old_inside_defer
 	// name := p.table.get_type_name(typ)
 	return ast.AnonFn{

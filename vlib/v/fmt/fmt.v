@@ -1721,6 +1721,7 @@ pub fn (mut f Fmt) fn_type_decl(node ast.FnTypeDecl) {
 			if s.starts_with('&') {
 				s = s[1..]
 			}
+			s = s.trim_left('shared ')
 		}
 		is_last_arg := i == fn_info.params.len - 1
 		should_add_type := true || is_last_arg
@@ -1817,6 +1818,9 @@ pub fn (mut f Fmt) array_decompose(node ast.ArrayDecompose) {
 }
 
 pub fn (mut f Fmt) array_init(node ast.ArrayInit) {
+	if node.is_fixed && node.is_option {
+		f.write('?')
+	}
 	if node.exprs.len == 0 && node.typ != 0 && node.typ != ast.void_type {
 		// `x := []string{}`
 		f.mark_types_import_as_used(node.typ)
@@ -2058,7 +2062,7 @@ fn (mut f Fmt) write_static_method(name string, short_name string) {
 pub fn (mut f Fmt) call_expr(node ast.CallExpr) {
 	mut is_method_newline := false
 	if node.is_method {
-		if node.name in ['map', 'filter', 'all', 'any'] {
+		if node.name in ['map', 'filter', 'all', 'any', 'count'] {
 			f.in_lambda_depth++
 			defer { f.in_lambda_depth-- }
 		}

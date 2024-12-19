@@ -355,7 +355,10 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 		p.check(.rcbr)
 		end_comments = p.eat_comments(same_line: true)
 	}
-	scoped_name := if !is_anon && p.inside_fn { '_${name}_${p.cur_fn_scope.start_pos}' } else { '' }
+	mut scoped_name := ''
+	if !is_anon && p.inside_fn && p.cur_fn_scope != unsafe { nil } {
+		scoped_name = '_${name}_${p.cur_fn_scope.start_pos}'
+	}
 	is_minify := attrs.contains('minify')
 	mut sym := ast.TypeSymbol{
 		kind:       .struct
@@ -665,7 +668,7 @@ fn (mut p Parser) interface_decl() ast.InterfaceDecl {
 			is_mut = true
 			mut_pos = fields.len
 		}
-		if p.peek_tok.kind in [.lt, .lsbr] && p.peek_tok.is_next_to(p.tok) {
+		if p.peek_tok.kind == .lsbr && p.peek_tok.is_next_to(p.tok) {
 			if generic_types.len == 0 {
 				p.error_with_pos('non-generic interface `${interface_name}` cannot define a generic method',
 					p.peek_tok.pos())
