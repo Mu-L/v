@@ -169,7 +169,15 @@ fn (mut c Checker) array_init(mut node ast.ArrayInit) ast.Type {
 			}
 		}
 		for i, mut expr in node.exprs {
-			mut typ := c.check_expr_option_or_result_call(expr, c.expr(mut expr))
+			mut typ := ast.void_type
+			if expr is ast.ArrayInit {
+				old_expected_type := c.expected_type
+				c.expected_type = c.table.value_type(c.expected_type)
+				typ = c.check_expr_option_or_result_call(expr, c.expr(mut expr))
+				c.expected_type = old_expected_type
+			} else {
+				typ = c.check_expr_option_or_result_call(expr, c.expr(mut expr))
+			}
 			if expr is ast.CallExpr {
 				ret_sym := c.table.sym(typ)
 				if ret_sym.kind == .array_fixed {
@@ -277,6 +285,9 @@ fn (mut c Checker) array_init(mut node ast.ArrayInit) ast.Type {
 			|| c.array_fixed_has_unresolved_size(sym.info as ast.ArrayFixed) {
 			mut size_expr := node.exprs[0]
 			node.typ = c.eval_array_fixed_sizes(mut size_expr, 0, node.elem_type)
+			if node.is_option {
+				node.typ = node.typ.set_flag(.option)
+			}
 			node.elem_type = (c.table.sym(node.typ).info as ast.ArrayFixed).elem_type
 		}
 		if node.has_init {
@@ -288,6 +299,7 @@ fn (mut c Checker) array_init(mut node ast.ArrayInit) ast.Type {
 
 fn (mut c Checker) check_array_init_default_expr(mut node ast.ArrayInit) {
 	mut init_expr := node.init_expr
+	c.expected_type = node.elem_type
 	init_typ := c.check_expr_option_or_result_call(init_expr, c.expr(mut init_expr))
 	node.init_type = init_typ
 	if !node.elem_type.has_flag(.option) && init_typ.has_flag(.option) {

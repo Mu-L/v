@@ -834,6 +834,7 @@ pub mut:
 	is_return_used         bool // return value is used for another expr
 	//
 	is_expand_simple_interpolation bool // true, when the function/method is marked as @[expand_simple_interpolation]
+	is_unwrapped_fn_selector       bool // true, when the call is from an unwrapped selector (e.g. if t.foo != none { t.foo() })
 	// Calls to it with an interpolation argument like `b.f('x ${y}')`, will be converted to `b.f('x ')` followed by `b.f(y)`.
 	// The same type, has to support also a .write_decimal(n i64) method.
 }
@@ -1073,6 +1074,7 @@ pub mut:
 	is_mut         bool // if mut *token* is before name. Use `is_mut()` to lookup mut variable
 	or_expr        OrExpr
 	concrete_types []Type
+	ct_expr        bool // is it a comptime expr?
 }
 
 // full_name returns the name of the ident, prefixed with the module name
@@ -1545,12 +1547,13 @@ pub:
 	ecmnts        [][]Comment // optional iembed comments after each expr
 	pre_cmnts     []Comment
 	is_fixed      bool
+	is_option     bool // true if it was declared as ?[2]Type or ?[]Type
 	has_val       bool // fixed size literal `[expr, expr]!`
 	mod           string
 	has_len       bool
 	has_cap       bool
 	has_init      bool
-	has_index     bool // true if temp variable index is used
+	has_index     bool // true if temp variable index is used	
 pub mut:
 	exprs        []Expr // `[expr, expr]` or `[expr]Type{}` for fixed array
 	len_expr     Expr   // len: expr
@@ -2148,6 +2151,17 @@ pub fn (expr Expr) is_blank_ident() bool {
 	return false
 }
 
+@[inline]
+pub fn (expr Expr) is_as_cast() bool {
+	if expr is ParExpr {
+		return expr.expr.is_as_cast()
+	} else if expr is SelectorExpr {
+		return expr.expr.is_as_cast()
+	} else {
+		return expr is AsCast
+	}
+}
+
 __global nested_expr_pos_calls = i64(0)
 // values above 14000 risk stack overflow by default on macos in Expr.pos() calls
 const max_nested_expr_pos_calls = 5000
@@ -2291,7 +2305,8 @@ pub:
 	typ    Type   // the type of the original expression
 	is_ptr bool   // whether the type is a pointer
 pub mut:
-	orig Expr // the original expression, which produced the C temp variable; used by x.str()
+	orig         Expr // the original expression, which produced the C temp variable; used by x.str()
+	is_fixed_ret bool // it is an array fixed returned from call
 }
 
 pub fn (node Node) pos() token.Pos {

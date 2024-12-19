@@ -2060,6 +2060,9 @@ fn (mut p Parser) parse_attr(is_at bool) ast.Attr {
 				kind = .bool
 				arg = p.tok.kind.str()
 				p.next()
+			} else if token.is_key(p.tok.lit) { // // `name: keyword`
+				kind = .plain
+				arg = p.check_name()
 			} else {
 				p.unexpected(additional_msg: 'an argument is expected after `:`')
 			}
@@ -3332,7 +3335,7 @@ fn (mut p Parser) dot_expr(left ast.Expr) ast.Expr {
 	} else {
 		p.name_error = true
 	}
-	is_filter := field_name in ['filter', 'map', 'any', 'all']
+	is_filter := field_name in ['filter', 'map', 'any', 'all', 'count']
 	if is_filter || field_name == 'sort' || field_name == 'sorted' {
 		p.open_scope()
 		defer {
@@ -3439,10 +3442,13 @@ fn (mut p Parser) dot_expr(left ast.Expr) ast.Expr {
 fn (mut p Parser) parse_generic_types() ([]ast.Type, []string) {
 	mut types := []ast.Type{}
 	mut param_names := []string{}
-	if p.tok.kind !in [.lt, .lsbr] {
+	if p.tok.kind == .lt {
+		p.error('The generic symbol `<>` is obsolete, please replace it with `[]`')
+	}
+	if p.tok.kind != .lsbr {
 		return types, param_names
 	}
-	end_kind := if p.tok.kind == .lt { token.Kind.gt } else { token.Kind.rsbr }
+	end_kind := token.Kind.rsbr
 	p.next()
 	mut first_done := false
 	mut count := 0
@@ -3489,15 +3495,18 @@ fn (mut p Parser) parse_generic_types() ([]ast.Type, []string) {
 
 fn (mut p Parser) parse_concrete_types() []ast.Type {
 	mut types := []ast.Type{}
-	if p.tok.kind !in [.lt, .lsbr] {
+	if p.tok.kind == .lt {
+		p.error('The generic symbol `<>` is obsolete, please replace it with `[]`')
+	}
+	if p.tok.kind != .lsbr {
 		return types
 	}
 	p.inside_fn_concrete_type = true
 	defer {
 		p.inside_fn_concrete_type = false
 	}
-	end_kind := if p.tok.kind == .lt { token.Kind.gt } else { token.Kind.rsbr }
-	p.next() // `<`
+	end_kind := token.Kind.rsbr
+	p.next() // `[`
 	mut first_done := false
 	for p.tok.kind !in [.eof, end_kind] {
 		if first_done {
@@ -3506,7 +3515,7 @@ fn (mut p Parser) parse_concrete_types() []ast.Type {
 		types << p.parse_type()
 		first_done = true
 	}
-	p.check(end_kind) // `>`
+	p.check(end_kind) // `]`
 	return types
 }
 

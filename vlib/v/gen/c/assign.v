@@ -54,6 +54,38 @@ fn (mut g Gen) expr_with_opt_or_block(expr ast.Expr, expr_typ ast.Type, var_expr
 	}
 }
 
+// expr_opt_with_alias handles conversion from different option alias type name
+fn (mut g Gen) expr_opt_with_alias(expr ast.Expr, expr_typ ast.Type, ret_typ ast.Type, tmp_var string) string {
+	styp := g.base_type(ret_typ)
+
+	line := g.go_before_last_stmt().trim_space()
+	g.empty_line = true
+
+	ret_var := g.new_tmp_var()
+	ret_styp := g.styp(ret_typ).replace('*', '_ptr')
+	g.writeln('${ret_styp} ${ret_var} = {0};')
+
+	g.write('_option_clone((${option_name}*)')
+	has_addr := expr !in [ast.Ident, ast.SelectorExpr]
+	if has_addr {
+		expr_styp := g.styp(expr_typ).replace('*', '_ptr')
+		g.write('ADDR(${expr_styp}, ')
+	} else {
+		g.write('&')
+	}
+	g.expr(expr)
+	if has_addr {
+		g.write(')')
+	}
+	g.writeln(', (${option_name}*)&${ret_var}, sizeof(${styp}));')
+	g.write(line)
+	if g.inside_return {
+		g.write(' ')
+	}
+	g.write(ret_var)
+	return ret_var
+}
+
 // expr_opt_with_cast is used in cast expr when converting compatible option types
 // e.g. ?int(?u8(0))
 fn (mut g Gen) expr_opt_with_cast(expr ast.Expr, expr_typ ast.Type, ret_typ ast.Type) string {
@@ -64,33 +96,35 @@ fn (mut g Gen) expr_opt_with_cast(expr ast.Expr, expr_typ ast.Type, ret_typ ast.
 	if expr_typ.idx() == ret_typ.idx() && g.table.sym(expr_typ).kind != .alias {
 		return g.expr_with_opt(expr, expr_typ, ret_typ)
 	} else {
-		past := g.past_tmp_var_new()
-		defer {
-			g.past_tmp_var_done(past)
-		}
-
-		styp := g.base_type(ret_typ)
-		decl_styp := g.styp(ret_typ).replace('*', '_ptr')
-		g.writeln('${decl_styp} ${past.tmp_var};')
-		is_none := expr is ast.CastExpr && expr.expr is ast.None
-		if is_none {
-			g.write('_option_none(&(${styp}[]) {')
+		if expr is ast.CallExpr && expr.return_type.has_flag(.option) {
+			return g.expr_opt_with_alias(expr, expr_typ, ret_typ, '')
 		} else {
-			g.write('_option_ok(&(${styp}[]) {')
+			past := g.past_tmp_var_new()
+			defer {
+				g.past_tmp_var_done(past)
+			}
+			styp := g.base_type(ret_typ)
+			decl_styp := g.styp(ret_typ).replace('*', '_ptr')
+			g.writeln('${decl_styp} ${past.tmp_var};')
+			is_none := expr is ast.CastExpr && expr.expr is ast.None
+			if is_none {
+				g.write('_option_none(&(${styp}[]) {')
+			} else {
+				g.write('_option_ok(&(${styp}[]) {')
+			}
+			if expr is ast.CastExpr && expr_typ.has_flag(.option) {
+				g.write('*((${g.base_type(expr_typ)}*)')
+				g.expr(expr)
+				g.write('.data)')
+			} else {
+				old_inside_opt_or_res := g.inside_opt_or_res
+				g.inside_opt_or_res = false
+				g.expr_with_cast(expr, expr_typ, ret_typ)
+				g.inside_opt_or_res = old_inside_opt_or_res
+			}
+			g.writeln(' }, (${option_name}*)(&${past.tmp_var}), sizeof(${styp}));')
+			return past.tmp_var
 		}
-		if expr is ast.CastExpr && expr_typ.has_flag(.option) {
-			g.write('*((${g.base_type(expr_typ)}*)')
-			g.expr(expr)
-			g.write('.data)')
-		} else {
-			old_inside_opt_or_res := g.inside_opt_or_res
-			g.inside_opt_or_res = false
-			g.expr_with_cast(expr, expr_typ, ret_typ)
-			g.inside_opt_or_res = old_inside_opt_or_res
-		}
-		g.writeln(' }, (${option_name}*)(&${past.tmp_var}), sizeof(${styp}));')
-
-		return past.tmp_var
 	}
 }
 
@@ -258,7 +292,7 @@ fn (mut g Gen) assign_stmt(node_ ast.AssignStmt) {
 				}
 			}
 			if mut left.obj is ast.Var {
-				if val is ast.Ident && g.comptime.is_comptime_var(val) {
+				if val is ast.Ident && val.ct_expr {
 					ctyp := g.unwrap_generic(g.comptime.get_type(val))
 					if ctyp != ast.void_type {
 						var_type = ctyp
@@ -458,11 +492,21 @@ fn (mut g Gen) assign_stmt(node_ ast.AssignStmt) {
 				g.write(' = ')
 				g.expr_with_opt(val, val_type, var_type)
 			} else if unaliased_right_sym.kind == .array_fixed && val is ast.CastExpr {
-				g.write('memcpy(')
-				g.expr(left)
-				g.write(', ')
-				g.expr(val)
-				g.writeln(', sizeof(${g.styp(var_type)}));')
+				if var_type.has_flag(.option) {
+					g.expr(left)
+					g.writeln('.state = 0;')
+					g.write('memcpy(')
+					g.expr(left)
+					g.write('.data, ')
+					g.expr(val)
+					g.writeln(', sizeof(${g.styp(var_type.clear_flag(.option))}));')
+				} else {
+					g.write('memcpy(')
+					g.expr(left)
+					g.write(', ')
+					g.expr(val)
+					g.writeln(', sizeof(${g.styp(var_type)}));')
+				}
 			} else {
 				mut v_var := ''
 				arr_typ := styp.trim('*')
@@ -980,8 +1024,8 @@ fn (mut g Gen) gen_cross_var_assign(node &ast.AssignStmt) {
 						}
 					}
 				}
-				if left_sym.kind == .function {
-					g.write_fn_ptr_decl(left_sym.info as ast.FnType, '_var_${left.pos.pos}')
+				if left_sym.info is ast.FnType {
+					g.write_fn_ptr_decl(&left_sym.info, '_var_${left.pos.pos}')
 					g.writeln(' = ${anon_ctx}${c_name(left.name)};')
 				} else if left_is_auto_deref_var {
 					styp := g.styp(left_typ).trim('*')
